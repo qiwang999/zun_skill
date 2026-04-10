@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Vector index (86MB, rebuild with `python3 scripts/cli.py --rebuild`)
+references/vector_index/
+
+# IDE
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
