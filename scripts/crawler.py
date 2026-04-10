@@ -48,12 +48,13 @@ class InterviewCrawler:
     def fetch_thbwiki_interviews(self) -> list:
         """爬取 THBWiki HTML 访谈源，返回语录列表"""
         all_quotes = []
-        for source_id, url in INTERVIEW_URLS:
+        for source_id, url, parser_name in INTERVIEW_URLS:
             content = self.fetch_with_cache(source_id, url, ".html")
             if content:
-                quotes = self.parser.parse_html_auto(content, source_id)
+                parser_method = getattr(self.parser, parser_name)
+                quotes = parser_method(content, source_id)
                 all_quotes.extend(quotes)
-                print(f"    → {len(quotes)} quotes")
+                print(f"    → {len(quotes)} quotes [{parser_name}]")
         return all_quotes
 
     # ── GitHub Markdown 爬取 ──────────────────────────

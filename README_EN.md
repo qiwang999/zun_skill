@@ -1,6 +1,6 @@
 <div align="center">
 
-# ZUN Persona Skill
+# 太田顺也.skill
 
 > *"I'll continue making games at my own leisurely pace. I might make them, I might not, and what I've said here might change too — please enjoy this carefree way of living"*
 
@@ -60,52 +60,25 @@ Not simple quote repetition. ZUN uses cognitive frameworks like **"Interesting =
 
 When a user asks a question, the system retrieves relevant quotes in this order:
 
-```
-  User Input
-  "Why do you make games alone?"
-       │
-       ▼
-  ┌─────────────────────────────────┐
-  │  Step 1 · SKILL.md Inline Quotes │
-  │  Core quotes — no search needed  │
-  └──────────────┬──────────────────┘
-                 │ Not enough?
-                 ▼
-  ┌─────────────────────────────────────────────────────┐
-  │              Step 2 · Dual Vector Search              │
-  │                                                       │
-  │   ┌──────────────────┐   ┌──────────────────┐        │
-  │   │  Question         │   │  Answer           │        │
-  │   │  Collection       │   │  Collection       │        │
-  │   │  zun_questions   │   │  zun_quotes      │        │
-  │   │                  │   │                  │        │
-  │   │  Search similar  │   │  Search answers  │        │
-  │   │  questions       │   │  directly        │        │
-  │   │      │           │   │      │           │        │
-  │   │      ▼           │   │      ▼           │        │
-  │   │  Found:          │   │  Found:          │        │
-  │   │  "Don't play     │   │  "Why I don't   │        │
-  │   │   your games?"   │   │   play social"  │        │
-  │   │      │           │   │                  │        │
-  │   │      ▼           │   │                  │        │
-  │   │  answer_id ──────┼───┼──→ Fetch linked  │        │
-  │   └──────────────────┘   └──────────────────┘        │
-  │              │                │                        │
-  │              └───────┬────────┘                        │
-  │                      ▼                                 │
-  │          Merge · Deduplicate · Rank by similarity      │
-  │       question_match takes priority (full context)     │
-  └──────────────────────┬────────────────────────────────┘
-                         │ Similarity < 0.7 or no coverage?
-                         ▼
-  ┌─────────────────────────────────┐
-  │  Step 3 · Web Search            │
-  │  ZUN {keyword} 発言 訪談         │
-  │  Priority: Garakuta > THBWiki   │
-  └──────────────┬──────────────────┘
-                 │ Nothing found?
-                 ▼
-  "Well... I don't really remember (laughs)"
+```mermaid
+flowchart TD
+    A["📝 User Input<br>\"Why do you make games alone?\""] --> B{"Step 1 · SKILL.md Inline Quotes"}
+    B -- Hit core quote --> Z["✅ Return directly"]
+    B -- Not enough? --> C["Step 2 · Dual Vector Search"]
+
+    C --> CQ["🔍 Question Collection<br>zun_questions<br>Search similar questions"]
+    C --> CA["🔍 Answer Collection<br>zun_quotes<br>Search answers directly"]
+
+    CQ --> CQ_HIT["Found:<br>\"Don't play your games?\""]
+    CA --> CA_HIT["Found:<br>\"Why I don't play social\""]
+
+    CQ_HIT --> M["🔗 Merge·Deduplicate·Rank<br>question_match priority"]
+    CA_HIT --> M
+
+    M --> D{Similarity >= 0.7 ?}
+    D -- Yes --> R["🎯 Return results"]
+    D -- No / No coverage --> E["Step 3 · Web Search<br>ZUN {keyword} 発言 訪談"]
+    E --> F["❌ \"Well... I don't really remember (laughs)\""]
 ```
 
 ### Why Two Stages?
@@ -307,7 +280,7 @@ Honestly, a Skill that doesn't tell you its limitations isn't worth trusting —
 
 ```
 zun-persona/
-├── SKILL.md                          # ZUN persona core file (loaded on activation)
+├── SKILL.md                          # 太田顺也.skill core file (loaded on activation)
 ├── README.md                         # Chinese README
 ├── README_EN.md                      # This file (English)
 ├── README_JA.md                      # Japanese README
@@ -373,7 +346,7 @@ MIT — Use it, modify it, do whatever.
 <div align="center">
 
 **Quotes** tell you what he said.<br>
-**ZUN Persona Skill** helps you see through his lens.<br><br>
+**太田顺也.skill** helps you see through his lens.<br><br>
 *The ultimate goal is still to make danmaku interesting.*
 
 <br>

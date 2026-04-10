@@ -52,12 +52,19 @@ class InterviewParser:
         """
         quotes = []
         all_rows = self._extract_thbwiki_table_rows(content)
-        self._extract_qa_from_rows(all_rows, source_id, quotes)
+        self._extract_qa_from_rows(all_rows, source_id, quotes, merge_consecutive=False)
         return quotes
 
     def _extract_thbwiki_table_rows(self, content: str) -> list:
         """从 THBWiki 表格中提取行数据"""
         all_rows = []
+        seen_texts = set()
+
+        def _add_row(speaker, is_zun, text):
+            text = text.strip()
+            if len(text) > 5 and text not in seen_texts:
+                seen_texts.add(text)
+                all_rows.append({"speaker": speaker, "is_zun": is_zun, "text": text})
 
         # 方法1: tt-content 行（最常见格式）
         tr_pattern = re.compile(r'<tr[^>]*class="tt-content"[^>]*>(.*?)</tr>', re.DOTALL)
@@ -71,42 +78,137 @@ class InterviewParser:
             zh_match = zh_pattern.search(tr_html)
             if zh_match:
                 zh_text = self.cleaner.clean_html(zh_match.group(1))
-                if len(zh_text) > 5:
-                    all_rows.append({"speaker": speaker, "is_zun": is_zun, "text": zh_text})
+                _add_row(speaker, is_zun, zh_text)
 
-        # 方法2: tt-type-dialogue 格式（如 shujin-no-kotodama）
-        if not all_rows:
-            all_trs = re.findall(r'<tr[^>]*>(.*?)</tr>', content, re.DOTALL)
-            for tr_html in all_trs:
-                char_matches = re.findall(
-                    r'<td[^>]*class="tt-char[^"]*"[^>]*>(.*?)</td>', tr_html, re.DOTALL
-                )
-                speaker = self.cleaner.clean_html(char_matches[0]).strip() if char_matches else ""
-                is_zun = any(self.cleaner.clean_html(cm).strip() in ZUN_NAMES for cm in char_matches)
-                zh_matches = re.findall(
-                    r'<td[^>]*class="tt-zh[^"]*"[^>]*>(.*?)</td>', tr_html, re.DOTALL
-                )
-                for zh_match in zh_matches:
-                    zh_text = self.cleaner.clean_html(zh_match)
-                    if len(zh_text) > 5:
-                        all_rows.append({"speaker": speaker, "is_zun": is_zun, "text": zh_text})
+        # 方法2: tt-type-dialogue div 格式（如 shujin-no-kotodama）
+        # 格式：<div class="tt-char tt-type-dialogue">说话人</div><div class="tt-zh tt-type-dialogue">内容</div>
+        dialogue_divs = re.findall(
+            r'<div[^>]*class="tt-char\s+tt-type-dialogue"[^>]*>(.*?)</div>\s*'
+            r'<div[^>]*class="tt-zh\s+tt-type-dialogue"[^>]*>(.*?)</div>',
+            content, re.DOTALL
+        )
+        for char_html, zh_html in dialogue_divs:
+            speaker = self.cleaner.clean_html(char_html).strip()
+            is_zun = speaker in ZUN_NAMES or speaker == "ZUN"
+            zh_text = self.cleaner.clean_html(zh_html)
+            _add_row(speaker, is_zun, zh_text)
 
         return all_rows
+
+    # ── THBWiki 表格 + tt-narrator 格式 ────────────────────
+
+    def parse_thbwiki_narrator(self, content: str, source_id: str) -> list:
+        """解析 THBWiki 表格格式，同时提取 tt-narrator 行中 ZUN 的发言
+
+        适用于 gairai-shinpireku 等页面：ZUN 的发言在 tt-narrator 行中，
+        而非 tt-char 行（因为 ZUN 不是被采访者，而是以旁白/叙述者身份出现）
+        """
+        quotes = []
+        # 先提取标准 tt-content 行
+        all_rows = self._extract_thbwiki_table_rows(content)
+
+        # 再提取 tt-narrator 行中的 ZUN 发言
+        narrator_rows = self._extract_narrator_rows(content)
+        all_rows.extend(narrator_rows)
+
+        self._extract_qa_from_rows(all_rows, source_id, quotes, merge_consecutive=False)
+        return quotes
+
+    def _extract_narrator_rows(self, content: str) -> list:
+        """从 tt-narrator 行中提取 ZUN 发言
+
+        tt-narrator 格式：<tr class="tt-narrator"><td class="tt-char">ZUN</td><td class="tt-zh">内容</td></tr>
+        """
+        rows = []
+        narrator_pattern = re.compile(r'<tr[^>]*class="tt-narrator"[^>]*>(.*?)</tr>', re.DOTALL)
+        for tr_match in narrator_pattern.finditer(content):
+            tr_html = tr_match.group(1)
+            char_pattern = re.compile(r'<td[^>]*class="tt-char[^"]*"[^>]*>(.*?)</td>', re.DOTALL)
+            char_matches = char_pattern.findall(tr_html)
+            speaker = self.cleaner.clean_html(char_matches[0]).strip() if char_matches else ""
+            is_zun = any(self.cleaner.clean_html(cm).strip() in ZUN_NAMES for cm in char_matches)
+            zh_pattern = re.compile(r'<td[^>]*class="tt-zh"[^>]*>(.*?)</td>', re.DOTALL)
+            zh_match = zh_pattern.search(tr_html)
+            if zh_match and is_zun:
+                zh_text = self.cleaner.clean_html(zh_match.group(1))
+                if len(zh_text.strip()) > 5:
+                    rows.append({"speaker": speaker, "is_zun": is_zun, "text": zh_text.strip()})
+        return rows
 
     # ── THBWiki dt/dd 格式 ──────────────────────────────
 
     def parse_thbwiki_dtdd(self, content: str, source_id: str) -> list:
-        """解析 THBWiki <dl>/<dt>/<dd> 格式的访谈"""
+        """解析 THBWiki <dl>/<dt>/<dd> 格式的访谈
+
+        同时提取 h2/h3 标题作为话题上下文（用于没有明确提问者的段落）
+        """
         quotes = []
         body = self.cleaner.extract_mw_body(content)
-        dt_dd_pattern = re.compile(r'<dt>(.*?)</dt>\s*<dd>(.*?)</dd>', re.DOTALL)
+
+        # 先提取标题作为话题分隔
+        headlines = list(re.finditer(
+            r'<h[23][^>]*>\s*<span[^>]*class="mw-headline"[^>]*>(.*?)</span>', body, re.DOTALL
+        ))
+
+        # 建立 位置→标题 的映射
+        topic_map = {}
+        for hl in headlines:
+            topic_text = self.cleaner.clean_html(hl.group(1)).strip()
+            if topic_text and len(topic_text) > 2:
+                topic_map[hl.start()] = topic_text
+
+        # 排序位置，用于二分查找
+        sorted_positions = sorted(topic_map.keys())
+
+        def _find_topic(pos):
+            """找到 pos 之前最近的标题"""
+            if not sorted_positions:
+                return None
+            # 简单线性查找（标题数量少，性能没问题）
+            best = None
+            for p in sorted_positions:
+                if p <= pos:
+                    best = topic_map[p]
+                else:
+                    break
+            return best
+
+        # 提取 dt/dd 对
+        dt_dd_pattern = re.compile(r'<dt[^>]*>(.*?)</dt>\s*<dd[^>]*>(.*?)</dd>', re.DOTALL)
         rows = []
-        for dt_match, dd_match in dt_dd_pattern.findall(body):
-            speaker = self.cleaner.clean_html(dt_match).strip()
-            text = self.cleaner.clean_html(dd_match)
+        for m in dt_dd_pattern.finditer(body):
+            dt_html, dd_html = m.group(1), m.group(2)
+            speaker = self.cleaner.clean_html(dt_html).strip()
+            text = self.cleaner.clean_html(dd_html)
+            is_zun = speaker in ZUN_NAMES
             if len(text) > 5:
-                rows.append({"speaker": speaker, "is_zun": speaker in ZUN_NAMES, "text": text})
-        self._extract_qa_from_rows(rows, source_id, quotes)
+                # 找到这个 dt/dd 之前最近的标题作为话题
+                topic = _find_topic(m.start())
+                rows.append({
+                    "speaker": speaker,
+                    "is_zun": is_zun,
+                    "text": text,
+                    "topic": topic,  # 额外字段，后续使用
+                })
+
+        # 不合并连续行——每条 dt/dd 天然是一条独立发言
+        # 用话题作为"提问"组成 QA pair
+        for row in rows:
+            if row["is_zun"]:
+                answer = re.sub(r'\s+', ' ', row["text"]).strip()
+                if len(answer) < 10:
+                    continue
+                topic = row.get("topic")
+                if topic and not topic.startswith("STAGE") and len(topic) > 3:
+                    quotes.append(self.factory.make_qa_pair(
+                        f"关于{topic}", answer, source_id
+                    ))
+                else:
+                    quotes.append(self.factory.make_quote(answer, source_id))
+            elif row["speaker"] and row["text"]:
+                # 非 ZUN 发言，跳过（但可以保留给未来的提问者提取）
+                pass
+
         return quotes
 
     # ── 通用表格格式 ────────────────────────────────────
@@ -320,10 +422,11 @@ class InterviewParser:
         - **ZUN**：回答
         - **提问者**：提问
         - ZUN\\n: 回答（MediaWiki 列表格式）
+        - ——\\n: 提问
         """
         rows = self._extract_markdown_rows(content)
         quotes = []
-        self._extract_qa_from_rows(rows, source_id, quotes)
+        self._extract_qa_from_rows(rows, source_id, quotes, merge_consecutive=False)
         return quotes
 
     def _extract_markdown_rows(self, content: str) -> list:
@@ -332,6 +435,11 @@ class InterviewParser:
         rows = []
         current_speaker = None
         current_text = []
+
+        # 其他说话人（非 ZUN）
+        OTHER_MD_SPEAKERS = re.compile(
+            r'^(azmaya|——|博之|记者|采访者|问[：:]|Q[：:]|EDITOR|小此木|海原|azmaya|编辑|取材)'
+        )
 
         def _flush():
             nonlocal current_speaker, current_text
@@ -356,9 +464,10 @@ class InterviewParser:
                 continue
 
             # 格式2: ZUN\n: xxx（MediaWiki 列表格式）
-            if stripped == "ZUN":
+            # 也支持其他说话人如 azmaya, ——
+            if stripped in ("ZUN", "——", "azmaya"):
                 _flush()
-                current_speaker = "ZUN"
+                current_speaker = stripped
                 continue
 
             # 列表回答行: : xxx
@@ -382,8 +491,9 @@ class InterviewParser:
                 continue
 
             if current_speaker and stripped and not stripped.startswith(": "):
-                if re.match(r'^(azmaya|——|博之|记者)', stripped):
+                if OTHER_MD_SPEAKERS.match(stripped):
                     _flush()
+                    current_speaker = stripped
                 else:
                     current_text.append(stripped)
 
@@ -490,7 +600,7 @@ class InterviewParser:
 
     # ── 通用 QApair 提取 ────────────────────────────────
 
-    def _extract_qa_from_rows(self, rows: list, source_id: str, quotes: list, min_len: int = 10):
+    def _extract_qa_from_rows(self, rows: list, source_id: str, quotes: list, min_len: int = 10, merge_consecutive: bool = True):
         """从有序行列表中提取提问-回答对和纯回答
 
         rows: [{"speaker": str, "is_zun": bool, "text": str}, ...]
@@ -499,9 +609,12 @@ class InterviewParser:
         - 连续多行非 ZUN → 合并为一个提问
         - 连续多行 ZUN → 合并为一个回答
         - 孤立 ZUN（前面无提问）→ 纯回答
+
+        merge_consecutive: True → 合并连续同一说话人（适用于段落格式）;
+                           False → 每行独立（适用于表格格式，每行天然是一条独立发言）
         """
-        # 先合并连续同一说话人的行
-        merged = self._merge_consecutive_rows(rows)
+        # 按需合并连续同一说话人的行
+        merged = self._merge_consecutive_rows(rows) if merge_consecutive else rows
 
         # 从合并后的行中提取 QApair 和纯回答
         i = 0
@@ -542,24 +655,8 @@ class InterviewParser:
         return merged
 
     # ── 解析器调度 ──────────────────────────────────────
-
-    ALL_PARSERS_HTML = [
-        "parse_thbwiki_table",
-        "parse_thbwiki_dtdd",
-        "parse_generic_table",
-        "parse_p_zun_format",
-        "parse_narrative_quotes",
-        "parse_plain_zun_text",
-    ]
-
-    def parse_html_auto(self, content: str, source_id: str) -> list:
-        """按优先级依次尝试 HTML 解析器，返回第一个非空结果"""
-        for parser_name in self.ALL_PARSERS_HTML:
-            parser = getattr(self, parser_name)
-            quotes = parser(content, source_id)
-            if quotes:
-                return quotes
-        return []
+    # 每个数据源对应唯一解析器，通过 config.INTERVIEW_URLS 中的 parser_name 字段指定
+    # 不再使用 auto 模式，避免误匹配
 
 
 # ── 模块级便捷实例 ──────────────────────────────────────
@@ -576,4 +673,3 @@ parse_narrative_quotes = _parser.parse_narrative_quotes
 parse_plain_zun_text = _parser.parse_plain_zun_text
 parse_markdown_interview = _parser.parse_markdown_interview
 parse_nikenme_radio = _parser.parse_nikenme_radio
-parse_html_auto = _parser.parse_html_auto
